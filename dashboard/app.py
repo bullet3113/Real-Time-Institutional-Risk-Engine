@@ -109,6 +109,10 @@ if last_heartbeat:
 else:
     status_container.error("Stream Offline / Starting...")
 
+# 2. Show Background Errors (CRITICAL)
+if stream_error:
+    error_container.error(f"Thread Error: {stream_error.decode()}")
+
 st.sidebar.header("⚡ Execution Blotter")
 
 if 'trade_stage' not in st.session_state:
