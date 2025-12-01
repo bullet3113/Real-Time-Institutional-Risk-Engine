@@ -32,108 +32,42 @@ rm = RiskManager()
 TICKERS = ["AAPL", "GOOG", "MSFT", "AMZN", "TSLA"]
 
 # ==========================================
-# 1. NEW: TRADE DIALOG (MODAL)
+# 1. BACKGROUND THREAD MANAGEMENT
 # ==========================================
-@st.dialog("⚡ Trade Execution Blotter")
-def open_trade_blotter():
-    # Initialize session state specific to this interaction
-    if 'blotter_step' not in st.session_state:
-        st.session_state.blotter_step = "input"
-    if 'blotter_proposal' not in st.session_state:
-        st.session_state.blotter_proposal = None
+if 'stream_thread' not in st.session_state:
+    st.session_state.stream_thread = None
 
-    # --- STEP 1: INPUT ---
-    if st.session_state.blotter_step == "input":
-        st.caption("Enter trade details to analyze risk impact.")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            ticker = st.selectbox("Ticker", TICKERS, key="dlg_ticker")
-            side = st.selectbox("Side", ["BUY", "SELL"], key="dlg_side")
-        with col2:
-            qty = st.number_input("Quantity", min_value=1, value=100, step=10, key="dlg_qty")
-            st.write("") # Spacer
-            st.write("") 
-        
-        # KEY FIX: use_container_width ensures easy clicking
-        if st.button("🔍 Analyze Risk Impact", use_container_width=True):
-            with st.spinner("Calculating Incremental VaR..."):
-                impact = rm.check_trade_impact(ticker, qty, side)
-                st.session_state.blotter_proposal = {
-                    "ticker": ticker, "qty": qty, "side": side, "impact": impact
-                }
-                st.session_state.blotter_step = "confirm"
-                st.rerun()
-
-    # --- STEP 2: CONFIRMATION ---
-    elif st.session_state.blotter_step == "confirm":
-        p = st.session_state.blotter_proposal
-        i = p['impact']
-        
-        st.subheader(f"{p['side']} {p['qty']} {p['ticker']}")
-        
-        # Display Risk Metrics
-        if i['status'] == "APPROVED":
-            st.success("✅ RISK CHECK PASSED")
+def ensure_background_thread_alive():
+    """Checks if thread is running, starts it if not."""
+    if st.session_state.stream_thread is None or not st.session_state.stream_thread.is_alive():
+        # Check if we need warmup first
+        if not r.exists("portfolio:cash"):
+            run_warmup()
             
-            met1, met2, met3 = st.columns(3)
-            met1.metric("Incremental VaR", f"${i['incremental_var']:,.2f}")
-            met2.metric("Liquidity Cost", f"${i['liquidity_cost']:,.2f}")
-            met3.metric("New Total VaR", f"${i['post_trade_var']:,.0f}")
-            
-            st.info(f"This trade adds ${i['incremental_var']:,.0f} to your total risk.")
-            
-            col_exec, col_cancel = st.columns([2, 1])
-            if col_exec.button("🚀 CONFIRM EXECUTION", type="primary", use_container_width=True):
-                rm.execute_trade(p['ticker'], p['qty'], p['side'])
-                st.toast(f"Executed: {p['side']} {p['qty']} {p['ticker']}", icon="✅")
-                # Reset and Close
-                st.session_state.blotter_step = "input"
-                st.session_state.blotter_proposal = None
-                st.rerun()
-                
-            if col_cancel.button("Cancel", use_container_width=True):
-                st.session_state.blotter_step = "input"
-                st.rerun()
-                
-        else:
-            st.error("❌ TRADE BLOCKED")
-            st.markdown(f"**Reason:** {i.get('reason')}")
-            
-            k1, k2 = st.columns(2)
-            k1.metric("Projected VaR", f"${i.get('post_trade_var', 0):,.0f}")
-            k2.metric("Limit", f"${i['limit']:,.0f}")
-            
-            if st.button("🔙 Back to Edit", use_container_width=True):
-                st.session_state.blotter_step = "input"
-                st.rerun()
-
+        t = threading.Thread(target=run_stream_processor, daemon=True)
+        t.start()
+        st.session_state.stream_thread = t
 
 # ==========================================
-# 2. MAIN LAYOUT
+# UI LAYOUT: CONTROLS
 # ==========================================
 st.title("🛡️ Institutional Risk Engine")
 
+# Cleaner Control Panel
 with st.expander("⚙️ Simulation Controls", expanded=True):
     col_ctrl1, col_ctrl2 = st.columns(2)
+    
     with col_ctrl1:
-        st.info("Market Data Source: Monte Carlo Simulation")
+        st.info("Market Data Source: Monte Carlo Simulation (Geometric Brownian Motion)")
+        
     with col_ctrl2:
+        # Renamed from "Debug Mode" to "Active Simulation"
         run_foreground = st.toggle("🟢 Activate Real-Time Simulation", value=True)
 
 st.divider()
 
-# ==========================================
-# 3. EXECUTION BUTTON (Top of Dashboard)
-# ==========================================
-col_exec_btn, col_blank = st.columns([1, 4])
-with col_exec_btn:
-    if st.button("⚡ Execute New Trade", type="primary", use_container_width=True):
-        open_trade_blotter()
-
-# ==========================================
-# 4. DASHBOARD PLACEHOLDERS
-# ==========================================
+# --- LIVE METRIC CONTAINERS ---
+# We create empty containers first, then fill them with data
 st.subheader("🔴 Live Market Prices")
 ticker_cols = st.columns(len(TICKERS))
 metric_placeholders = [col.empty() for col in ticker_cols]
@@ -155,7 +89,7 @@ with col_matrix:
     matrix_placeholder = st.empty()
 
 # ==========================================
-# 5. DATA RENDERING HELPER
+# 3. DATA RENDERING FUNCTION
 # ==========================================
 def render_dashboard():
     """Fetches data from Redis and updates all placeholders."""
@@ -165,7 +99,10 @@ def render_dashboard():
     if prices is not None:
         for i, ticker in enumerate(TICKERS):
             metric_placeholders[i].metric(label=ticker, value=f"${prices[i]:.2f}")
-    
+    else:
+        for i, ticker in enumerate(TICKERS):
+            metric_placeholders[i].warning("No Data")
+
     # B. Account KPIs
     data = rm.get_dashboard_metrics()
     if data:
@@ -199,52 +136,56 @@ def render_dashboard():
             )
 
 # ==========================================
-# 6. SIDEBAR STATUS (Simple Heartbeat)
-# ==========================================
-st.sidebar.header("🔌 System Status")
-try:
-    r = get_redis_connection()
-    hb = r.get("stream:heartbeat")
-    if hb: st.sidebar.success(f"Online: {hb.decode()}")
-except: pass
-
-# ==========================================
-# 7. EXECUTION LOOP (FIXED: NO WHILE LOOP)
+# 4. EXECUTION MODES
 # ==========================================
 
 if run_foreground:
-    # --- SIMULATION MODE (SINGLE FRAME) ---
+    # --- FOREGROUND MODE (Blocking Loop) ---
+    # Imports for logic
+    from engine.stream import update_covariance_ewma, MockDataStream, LAMBDA_DECAY
     
     # 1. Load State
     cov_matrix, prices = rm.get_market_data()
-    
-    # Auto-Warmup check
     if cov_matrix is None:
-        with st.spinner("Initializing Database..."):
-            run_warmup()
-            cov_matrix, prices = rm.get_market_data()
-            
-    # 2. Generate ONE Tick of Data
-    if prices is not None:
-        stream = MockDataStream(prices)
+        st.error("Run Warmup First!")
+        st.stop()
+        
+    stream = MockDataStream(prices)
+    current_cov_matrix = cov_matrix
+    last_prices = prices
+
+    st.info("Running in Foreground... Uncheck box to stop.")
+    
+    # Fast Loop inside the browser
+    while run_foreground:
+        # 1. Generate Data
         new_prices = stream.get_next_tick()
         returns = np.log(new_prices / prices) # log returns
         new_cov_matrix = update_covariance_ewma(cov_matrix, returns, LAMBDA_DECAY)
         
-        # 3. Save to Redis
+        # 2. Save to Redis (So Logic Manager can see it)
         r.set("risk:cov_matrix:current", pickle.dumps(new_cov_matrix))
         price_dict = {t: p for t, p in zip(TICKERS, new_prices)}
         r.set("market_data:last_prices", pickle.dumps(price_dict))
         r.set("stream:heartbeat", datetime.now().strftime("%H:%M:%S"))
-
-    # 4. Render and Wait
-    render_dashboard()
-    
-    # Wait 1.5s then reload page (Looping via Browser, not Python)
-    time.sleep(1.5)
-    st.rerun()
+        
+        # 3. Update Local Vars
+        last_prices = new_prices
+        current_cov_matrix = new_cov_matrix
+        
+        # 4. RENDER UI IMMEDIATELY
+        render_dashboard()
+        
+        time.sleep(1.5) # Speed of updates
 
 else:
-    # --- PAUSED MODE ---
+    # --- NORMAL BACKGROUND MODE ---
+    # 1. Ensure background thread is running
+    ensure_background_thread_alive()
+    
+    # 2. Render current state
     render_dashboard()
-    st.caption("Enable Simulation above to start data stream.")
+    
+    # 3. Auto-Refresh Page (The Heartbeat of the App)
+    time.sleep(2)
+    st.rerun()
