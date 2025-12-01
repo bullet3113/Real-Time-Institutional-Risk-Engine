@@ -50,27 +50,24 @@ def ensure_background_thread_alive():
         st.session_state.stream_thread = t
 
 # ==========================================
-# 2. UI LAYOUT: CONTAINERS (Placeholders)
+# UI LAYOUT: CONTROLS
 # ==========================================
 st.title("🛡️ Institutional Risk Engine")
 
-# Debug / Control Panel
-with st.expander("⚙️ System Controls", expanded=True):
+# Cleaner Control Panel
+with st.expander("⚙️ Simulation Controls", expanded=True):
     col_ctrl1, col_ctrl2 = st.columns(2)
+    
     with col_ctrl1:
-        st.write(f"**Status:**")
-        hb = r.get("stream:heartbeat")
-        if hb:
-            st.success(f"⚡ Stream Active (Last Update: {hb.decode()})")
-        else:
-            st.error("⚠️ Stream Inactive")
-            if st.button("Start Background Stream"):
-                ensure_background_thread_alive()
-                st.rerun()
-
+        st.info("Market Data Source: Monte Carlo Simulation (Geometric Brownian Motion)")
+        
     with col_ctrl2:
-        run_foreground = st.checkbox("🔥 Debug Mode (Run Stream in Foreground)")
-        st.caption("Check this if prices are stuck. It forces data generation in the UI.")
+        # Renamed from "Debug Mode" to "Active Simulation"
+        run_foreground = st.toggle("🟢 Activate Real-Time Simulation", value=True)
+        if run_foreground:
+            st.caption("Engine is generating live ticks...")
+        else:
+            st.caption("Simulation paused.")
 
 st.divider()
 
