@@ -11,7 +11,7 @@ from datetime import datetime
 # Allow imports from root
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from engine.stream import run_stream_processor
+from engine.stream import update_covariance_ewma, MockDataStream, LAMBDA_DECAY
 from engine.warmup import run_warmup
 from logic.risk_manager import RiskManager
 from db_config import get_redis_connection
@@ -55,6 +55,7 @@ def open_trade_blotter():
             st.write("") # Spacer
             st.write("") 
         
+        # KEY FIX: use_container_width ensures easy clicking
         if st.button("🔍 Analyze Risk Impact", use_container_width=True):
             with st.spinner("Calculating Incremental VaR..."):
                 impact = rm.check_trade_impact(ticker, qty, side)
@@ -198,53 +199,52 @@ def render_dashboard():
             )
 
 # ==========================================
-# 6. SIDEBAR STATUS (Blotter Removed)
+# 6. SIDEBAR STATUS (Simple Heartbeat)
 # ==========================================
 st.sidebar.header("🔌 System Status")
 try:
     r = get_redis_connection()
-    last_heartbeat = r.get("stream:heartbeat")
-    if last_heartbeat:
-        st.sidebar.success(f"Stream Online: {last_heartbeat.decode()}")
-    else:
-        st.sidebar.warning("Stream Starting...")
-except:
-    pass
+    hb = r.get("stream:heartbeat")
+    if hb: st.sidebar.success(f"Online: {hb.decode()}")
+except: pass
 
 # ==========================================
-# 7. EXECUTION LOOP
+# 7. EXECUTION LOOP (FIXED: NO WHILE LOOP)
 # ==========================================
 
 if run_foreground:
-    from engine.stream import update_covariance_ewma, MockDataStream, LAMBDA_DECAY
+    # --- SIMULATION MODE (SINGLE FRAME) ---
     
+    # 1. Load State
     cov_matrix, prices = rm.get_market_data()
     
+    # Auto-Warmup check
     if cov_matrix is None:
         with st.spinner("Initializing Database..."):
             run_warmup()
             cov_matrix, prices = rm.get_market_data()
             
-    stream = MockDataStream(prices)
-    current_cov_matrix = cov_matrix
-    last_prices = prices
-
-    while run_foreground:
+    # 2. Generate ONE Tick of Data
+    if prices is not None:
+        stream = MockDataStream(prices)
         new_prices = stream.get_next_tick()
-        returns = np.log(new_prices / last_prices)
-        new_cov_matrix = update_covariance_ewma(current_cov_matrix, returns, LAMBDA_DECAY)
+        returns = np.log(new_prices / prices) # log returns
+        new_cov_matrix = update_covariance_ewma(cov_matrix, returns, LAMBDA_DECAY)
         
+        # 3. Save to Redis
         r.set("risk:cov_matrix:current", pickle.dumps(new_cov_matrix))
         price_dict = {t: p for t, p in zip(TICKERS, new_prices)}
         r.set("market_data:last_prices", pickle.dumps(price_dict))
         r.set("stream:heartbeat", datetime.now().strftime("%H:%M:%S"))
-        
-        last_prices = new_prices
-        current_cov_matrix = new_cov_matrix
-        
-        render_dashboard()
-        time.sleep(1.5)
+
+    # 4. Render and Wait
+    render_dashboard()
+    
+    # Wait 1.5s then reload page (Looping via Browser, not Python)
+    time.sleep(1.5)
+    st.rerun()
 
 else:
+    # --- PAUSED MODE ---
     render_dashboard()
     st.caption("Enable Simulation above to start data stream.")
