@@ -14,43 +14,15 @@ from engine.warmup import run_warmup
 from db_config import get_redis_connection
 from logic.risk_manager import RiskManager
 
-# --- DEBUG SECTION: PASTE THIS AT THE TOP OF app.py ---
-if st.sidebar.button("🐞 Debug Connection"):
-    st.sidebar.write("1. Testing Imports...")
-    try:
-        from db_config import get_redis_connection
-        st.sidebar.success("Imports OK")
-    except ImportError as e:
-        st.sidebar.error(f"Import Failed: {e}")
-        st.stop()
-
-    st.sidebar.write("2. Connecting to Redis...")
-    try:
-        r = get_redis_connection()
-        r.ping()
-        st.sidebar.success(f"Redis Connected! Response: PONG")
-    except Exception as e:
-        st.sidebar.error(f"Redis Connection Failed: {e}")
-        st.sidebar.warning("Did you add REDIS_URL to Streamlit Secrets?")
-        st.stop()
-
-    st.sidebar.write("3. Writing Heartbeat...")
-    try:
-        r.set("stream:heartbeat", "DEBUG_TEST")
-        val = r.get("stream:heartbeat")
-        st.sidebar.success(f"Write Success. Value: {val}")
-    except Exception as e:
-        st.sidebar.error(f"Write Failed: {e}")
-
 st.set_page_config(layout="wide", page_title="Institutional Risk Dashboard")
 
 # --- BACKGROUND PROCESS MANAGER (CLOUD COMPATIBLE) ---
 @st.cache_resource
 def start_background_processes():
     """Starts the stream in a background thread ONCE."""
-    # Create a dummy connection just to check if we need warmup
     r = get_redis_connection()
     
+    # Check if DB needs warmup
     if not r.exists("portfolio:cash"):
         print("Running Warmup...")
         run_warmup()
@@ -99,17 +71,24 @@ matrix_container = st.empty()
 # ==========================================
 st.sidebar.header("🔌 System Status")
 status_container = st.sidebar.empty()
+error_container = st.sidebar.empty()
 
-# Fetch Heartbeat
-r = get_redis_connection()
-last_heartbeat = r.get("stream:heartbeat")
+# --- FIX: Fetch Data BEFORE checking it ---
+try:
+    r = get_redis_connection()
+    last_heartbeat = r.get("stream:heartbeat")
+    stream_error = r.get("stream:error")
+except Exception as e:
+    last_heartbeat = None
+    stream_error = f"Redis Connection Error: {str(e)}".encode()
 
+# 1. Show Heartbeat
 if last_heartbeat:
     status_container.success(f"Stream Online: {last_heartbeat.decode()}")
 else:
-    status_container.error("Stream Offline / Starting...")
+    status_container.warning("Stream Starting / Waiting...")
 
-# 2. Show Background Errors (CRITICAL)
+# 2. Show Background Errors (Now safely defined)
 if stream_error:
     error_container.error(f"Thread Error: {stream_error.decode()}")
 
@@ -221,7 +200,7 @@ while True:
                         "Isolated VaR": "${:,.0f}",
                         "Risk Contrib ($)": "${:,.0f}"
                     }),
-                    width="stretch",  # <--- FIXED HERE
+                    width="stretch", 
                     height=300
                 )
             else:
@@ -239,7 +218,7 @@ while True:
             
             st.dataframe(
                 corr_df.style.background_gradient(cmap="RdYlGn_r", vmin=-1, vmax=1).format("{:.2f}"),
-                width="stretch"  # <--- FIXED HERE
+                width="stretch"
             )
 
     time.sleep(1)
