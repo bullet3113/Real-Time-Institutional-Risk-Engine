@@ -1,6 +1,6 @@
 numpy
 pandas
 redis
-streamlit
+streamlit>=1.34.0
 yfinance
 matplotlib
