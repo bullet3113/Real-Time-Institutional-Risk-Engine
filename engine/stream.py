@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import random
 from datetime import datetime
-
+from db_config import get_redis_connection
 # ==========================================
 # CONFIGURATION
 # ==========================================
@@ -60,7 +60,7 @@ class MockDataStream:
 # ==========================================
 def run_stream_processor():
     # 1. Connect to Redis
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+    r = get_redis_connection()
     print(f"[STREAM] Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
 
     # 2. Load Initial State (From Warmup)
@@ -87,48 +87,49 @@ def run_stream_processor():
     stream = MockDataStream(last_prices)
 
     # 4. Infinite Loop
-    print(f"[STREAM] Listening for ticks... (Simulated every {REFRESH_RATE_SEC}s)")
-    
-    while True:
-        try:
-            # --- A. Ingest Data ---
-            new_prices = stream.get_next_tick()
-            
-            # --- B. Calculate Returns ---
-            # Log Return = ln(New / Old)
-            # Add small epsilon to avoid divide by zero if price is 0 (unlikely)
-            returns = np.log(new_prices / last_prices)
-            
-            # --- C. Update Matrix (EWMA) ---
-            new_cov_matrix = update_covariance_ewma(current_cov_matrix, returns, LAMBDA_DECAY)
-            
-            # --- D. Save to Redis ---
-            # 1. Save Matrix
-            r.set("risk:cov_matrix:current", pickle.dumps(new_cov_matrix))
-            
-            # 2. Save Prices (As Dict for Dashboard)
-            price_dict = {t: p for t, p in zip(TICKERS, new_prices)}
-            r.set("market_data:last_prices", pickle.dumps(price_dict))
-            
-            # --- E. Logging ---
-            # We calculate Volatility just for the console log
-            current_vols = np.sqrt(np.diagonal(new_cov_matrix))
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            
-            print(f"[{timestamp}] Matrix Updated | AAPL: ${new_prices[0]:.2f} | Vol: {current_vols[0]:.4f}")
-            
-            # --- F. Prepare for Next Loop ---
-            last_prices = new_prices
-            current_cov_matrix = new_cov_matrix
-            
-            time.sleep(REFRESH_RATE_SEC)
-            
-        except KeyboardInterrupt:
-            print("\n[STREAM] Stopping...")
-            break
-        except Exception as e:
-            print(f"[ERROR] Loop Failed: {e}")
-            time.sleep(1)
+    def run_stream_processor():
+        print(f"[STREAM] Listening for ticks... (Simulated every {REFRESH_RATE_SEC}s)")
+        
+        while True:
+            try:
+                # --- A. Ingest Data ---
+                new_prices = stream.get_next_tick()
+                
+                # --- B. Calculate Returns ---
+                # Log Return = ln(New / Old)
+                # Add small epsilon to avoid divide by zero if price is 0 (unlikely)
+                returns = np.log(new_prices / last_prices)
+                
+                # --- C. Update Matrix (EWMA) ---
+                new_cov_matrix = update_covariance_ewma(current_cov_matrix, returns, LAMBDA_DECAY)
+                
+                # --- D. Save to Redis ---
+                # 1. Save Matrix
+                r.set("risk:cov_matrix:current", pickle.dumps(new_cov_matrix))
+                
+                # 2. Save Prices (As Dict for Dashboard)
+                price_dict = {t: p for t, p in zip(TICKERS, new_prices)}
+                r.set("market_data:last_prices", pickle.dumps(price_dict))
+                
+                # --- E. Logging ---
+                # We calculate Volatility just for the console log
+                current_vols = np.sqrt(np.diagonal(new_cov_matrix))
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                
+                print(f"[{timestamp}] Matrix Updated | AAPL: ${new_prices[0]:.2f} | Vol: {current_vols[0]:.4f}")
+                
+                # --- F. Prepare for Next Loop ---
+                last_prices = new_prices
+                current_cov_matrix = new_cov_matrix
+                
+                time.sleep(REFRESH_RATE_SEC)
+                
+            except KeyboardInterrupt:
+                print("\n[STREAM] Stopping...")
+                break
+            except Exception as e:
+                print(f"[ERROR] Loop Failed: {e}")
+                time.sleep(1)
 
 if __name__ == "__main__":
     run_stream_processor()

@@ -4,6 +4,7 @@ import yfinance as yf
 import redis
 import pickle
 import sys
+from db_config import get_redis_connection
 
 # ==========================================
 # CONFIGURATION
@@ -27,7 +28,7 @@ STRESSED_END = "2020-03-25"
 
 def connect_redis():
     try:
-        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+        r = get_redis_connection()
         r.ping()
         print(f"[SUCCESS] Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
         return r

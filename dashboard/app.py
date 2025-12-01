@@ -4,6 +4,38 @@ import numpy as np
 import time
 import sys
 import os
+import threading
+
+# Allow imports from root
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from engine.stream import run_stream_processor
+from engine.warmup import run_warmup
+from db_config import get_redis_connection
+
+# --- BACKGROUND PROCESS MANAGER ---
+@st.cache_resource
+def start_background_processes():
+    """
+    1. Checks if DB is empty -> Runs Warmup
+    2. Starts the Data Stream in a background thread
+    """
+    r = get_redis_connection()
+    
+    # Check if DB needs warmup (look for a key)
+    if not r.exists("portfolio:cash"):
+        print("☁️ Cloud Deployment: Running Warmup...")
+        run_warmup()
+
+    # Start the Stream in a separate thread
+    # Daemon=True means it dies when the app dies
+    print("☁️ Cloud Deployment: Starting Data Stream Thread...")
+    t = threading.Thread(target=run_stream_processor, daemon=True)
+    t.start()
+    return t
+
+# Initialize the backend (Run once per server reboot)
+start_background_processes()
 
 # Path hack to allow importing from parent directory
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

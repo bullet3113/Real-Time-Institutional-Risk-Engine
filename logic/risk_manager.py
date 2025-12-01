@@ -4,6 +4,7 @@ import pickle
 import pandas as pd
 import sys
 import os
+from db_config import get_redis_connection
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from engine.math_logic import (
@@ -20,7 +21,8 @@ VAR_LIMIT_DOLLARS = 1_000_000 * 0.005  # $5,000
 
 class RiskManager:
     def __init__(self):
-        self.r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+        # ... inside your class/function ...
+        self.r = get_redis_connection()
 
     def get_market_data(self):
         """Fetch Matrix and Prices with Error Logging"""
