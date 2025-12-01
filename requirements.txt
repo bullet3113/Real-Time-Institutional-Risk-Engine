@@ -3,3 +3,4 @@ pandas
 redis
 streamlit
 yfinance
+matplotlib
