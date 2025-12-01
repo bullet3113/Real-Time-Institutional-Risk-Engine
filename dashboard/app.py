@@ -14,6 +14,34 @@ from engine.warmup import run_warmup
 from db_config import get_redis_connection
 from logic.risk_manager import RiskManager
 
+# --- DEBUG SECTION: PASTE THIS AT THE TOP OF app.py ---
+if st.sidebar.button("🐞 Debug Connection"):
+    st.sidebar.write("1. Testing Imports...")
+    try:
+        from db_config import get_redis_connection
+        st.sidebar.success("Imports OK")
+    except ImportError as e:
+        st.sidebar.error(f"Import Failed: {e}")
+        st.stop()
+
+    st.sidebar.write("2. Connecting to Redis...")
+    try:
+        r = get_redis_connection()
+        r.ping()
+        st.sidebar.success(f"Redis Connected! Response: PONG")
+    except Exception as e:
+        st.sidebar.error(f"Redis Connection Failed: {e}")
+        st.sidebar.warning("Did you add REDIS_URL to Streamlit Secrets?")
+        st.stop()
+
+    st.sidebar.write("3. Writing Heartbeat...")
+    try:
+        r.set("stream:heartbeat", "DEBUG_TEST")
+        val = r.get("stream:heartbeat")
+        st.sidebar.success(f"Write Success. Value: {val}")
+    except Exception as e:
+        st.sidebar.error(f"Write Failed: {e}")
+
 st.set_page_config(layout="wide", page_title="Institutional Risk Dashboard")
 
 # --- BACKGROUND PROCESS MANAGER (CLOUD COMPATIBLE) ---
