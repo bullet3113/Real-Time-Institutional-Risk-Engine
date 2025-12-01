@@ -13,28 +13,23 @@ from engine.stream import run_stream_processor
 from engine.warmup import run_warmup
 from db_config import get_redis_connection
 
-# --- BACKGROUND PROCESS MANAGER ---
+# 1. UPDATED BACKGROUND LOADER
 @st.cache_resource
 def start_background_processes():
-    """
-    1. Checks if DB is empty -> Runs Warmup
-    2. Starts the Data Stream in a background thread
-    """
+    """Starts the stream in a background thread ONCE."""
+    # Create a dummy connection just to check if we need warmup
     r = get_redis_connection()
     
-    # Check if DB needs warmup (look for a key)
     if not r.exists("portfolio:cash"):
-        print("☁️ Cloud Deployment: Running Warmup...")
+        print("Running Warmup...")
         run_warmup()
 
-    # Start the Stream in a separate thread
-    # Daemon=True means it dies when the app dies
-    print("☁️ Cloud Deployment: Starting Data Stream Thread...")
+    print("Starting Stream Thread...")
     t = threading.Thread(target=run_stream_processor, daemon=True)
     t.start()
     return t
 
-# Initialize the backend (Run once per server reboot)
+# Run the loader
 start_background_processes()
 
 # Path hack to allow importing from parent directory
@@ -73,6 +68,22 @@ st.divider()
 # ==========================================
 st.markdown("### 🧠 Real-Time Correlation Matrix")
 matrix_container = st.empty()
+
+# ==========================================
+# SIDEBAR: SYSTEM STATUS (Add this above Execution Blotter)
+# ==========================================
+st.sidebar.header("🔌 System Status")
+status_container = st.sidebar.empty()
+
+# Fetch Heartbeat directly from Redis
+r = get_redis_connection()
+last_heartbeat = r.get("stream:heartbeat")
+
+if last_heartbeat:
+    status_container.success(f"Stream Online: {last_heartbeat.decode()}")
+else:
+    status_container.error("Stream Offline / Starting...")
+
 
 # ==========================================
 # SIDEBAR: EXECUTION BLOTTER
