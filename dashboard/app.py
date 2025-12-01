@@ -5,6 +5,7 @@ import time
 import threading
 import sys
 import os
+import pickle
 from datetime import datetime
 
 # Allow imports from root
@@ -12,194 +13,151 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from engine.stream import run_stream_processor
 from engine.warmup import run_warmup
-from db_config import get_redis_connection
 from logic.risk_manager import RiskManager
+from db_config import get_redis_connection
 
 st.set_page_config(layout="wide", page_title="Institutional Risk Dashboard")
 
-# --- BACKGROUND PROCESS MANAGER ---
-@st.cache_resource
-def start_background_processes():
-    """Starts the stream in a background thread ONCE."""
-    try:
-        r = get_redis_connection()
-        if not r.exists("portfolio:cash"):
-            print("Running Warmup...")
-            run_warmup()
-            
-        print("Starting Stream Thread...")
+# ==========================================
+# 0. CLOUD CONNECTION CHECK (CRITICAL)
+# ==========================================
+try:
+    # Test connection immediately
+    r = get_redis_connection()
+    r.ping()
+except Exception as e:
+    st.error(f"🚨 FATAL ERROR: Cannot Connect to Redis.")
+    st.code(str(e))
+    st.info("Did you add 'REDIS_URL' to your Streamlit Secrets?")
+    st.stop()
+
+# ==========================================
+# 1. BACKGROUND PROCESS MANAGER
+# ==========================================
+if 'stream_thread' not in st.session_state:
+    st.session_state.stream_thread = None
+
+def start_background_thread():
+    if st.session_state.stream_thread is None or not st.session_state.stream_thread.is_alive():
+        print("☁️ Starting Background Stream...")
         t = threading.Thread(target=run_stream_processor, daemon=True)
         t.start()
-        return t
-    except Exception as e:
-        print(f"Background Process Failed: {e}")
-        return None
+        st.session_state.stream_thread = t
 
-# Run the loader
-start_background_processes()
+# ==========================================
+# 2. UI LAYOUT
+# ==========================================
+st.title("🛡️ Institutional Risk Engine (Cloud)")
 
-# Initialize Logic
+# --- DEBUG CONTROLS ---
+with st.expander("🛠️ Admin / Debugger", expanded=True):
+    col_debug1, col_debug2 = st.columns(2)
+    
+    with col_debug1:
+        st.write("**Background Thread Status:**")
+        # Check thread health
+        if st.session_state.stream_thread and st.session_state.stream_thread.is_alive():
+            st.success("Thread is Running ✅")
+            
+            # Check Heartbeat
+            hb = r.get("stream:heartbeat")
+            err = r.get("stream:error")
+            
+            if hb: st.caption(f"Last Heartbeat: {hb.decode()}")
+            if err: st.error(f"Stream Error: {err.decode()}")
+            
+        else:
+            st.warning("Thread is Stopped ❌")
+            if st.button("Start Background Stream"):
+                # Check warmup
+                if not r.exists("portfolio:cash"):
+                    with st.spinner("Running First-Time Warmup (Downloading Data)..."):
+                        run_warmup()
+                start_background_thread()
+                st.rerun()
+
+    with col_debug2:
+        st.write("**Foreground Test:**")
+        run_foreground = st.checkbox("🔥 Run Stream in Foreground (Blocks UI)")
+        st.caption("Use this if background thread fails. It forces the script to generate data right here.")
+
+# --- FOREGROUND EXECUTION LOOP ---
+if run_foreground:
+    st.warning("Running in Foreground Mode. Uncheck box to stop.")
+    placeholder = st.empty()
+    # Import logic directly to avoid import errors
+    from engine.stream import update_covariance_ewma, MockDataStream, TICKERS, LAMBDA_DECAY
+    
+    # Load state once
+    cov_matrix_bytes = r.get("risk:cov_matrix:current")
+    prices_bytes = r.get("market_data:last_prices")
+    
+    if cov_matrix_bytes and prices_bytes:
+        current_cov_matrix = pickle.loads(cov_matrix_bytes)
+        last_prices_dict = pickle.loads(prices_bytes)
+        last_prices = np.array([last_prices_dict[t] for t in TICKERS])
+        stream = MockDataStream(last_prices)
+        
+        # Fast Loop
+        while run_foreground:
+            new_prices = stream.get_next_tick()
+            returns = np.log(new_prices / last_prices)
+            new_cov_matrix = update_covariance_ewma(current_cov_matrix, returns, LAMBDA_DECAY)
+            
+            # Write
+            r.set("risk:cov_matrix:current", pickle.dumps(new_cov_matrix))
+            price_dict = {t: p for t, p in zip(TICKERS, new_prices)}
+            r.set("market_data:last_prices", pickle.dumps(price_dict))
+            r.set("stream:heartbeat", datetime.now().strftime("%H:%M:%S"))
+            
+            # Update Local Vars
+            last_prices = new_prices
+            current_cov_matrix = new_cov_matrix
+            
+            placeholder.success(f"Generated Tick: {new_prices[0]:.2f} at {datetime.now().strftime('%H:%M:%S')}")
+            time.sleep(1)
+    else:
+        st.error("Warmup data missing. Click 'Start Background Stream' first to seed DB.")
+
+# ==========================================
+# 3. DASHBOARD VIEW
+# ==========================================
 rm = RiskManager()
 TICKERS = ["AAPL", "GOOG", "MSFT", "AMZN", "TSLA"]
 
-# ==========================================
-# 1. HEADER & LIVE STATUS
-# ==========================================
-col_title, col_time = st.columns([3, 1])
-col_title.markdown("## 🛡️ Real-Time Risk Engine")
-# Visual Proof that the page is refreshing
-col_time.caption(f"Last Updated: {datetime.now().strftime('%H:%M:%S')}")
+# Auto-Refresh Logic (Non-blocking)
+if not run_foreground:
+    if st.button("🔄 Refresh Data"):
+        st.rerun()
 
-# ==========================================
-# 2. LIVE PRICES (TOP ROW)
-# ==========================================
-st.markdown("### 🔴 Live Market Prices")
+# --- LIVE PRICES ---
+st.subheader("Live Prices")
 cov_matrix, prices = rm.get_market_data()
 
-# Render Prices if available
 if prices is not None:
     cols = st.columns(len(TICKERS))
     for i, ticker in enumerate(TICKERS):
         cols[i].metric(label=ticker, value=f"${prices[i]:.2f}")
 else:
-    st.warning("Waiting for Market Data Stream...")
+    st.info("Waiting for data...")
 
 st.divider()
 
-# ==========================================
-# 3. KPIS & ACCOUNT
-# ==========================================
-st.markdown("### 🏦 Account Summary")
+# --- KPIS ---
 data = rm.get_dashboard_metrics()
-
 if data:
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Net Liquidation", f"${data['total_value']:,.0f}")
-    equity_val = data['total_value'] - data['cash']
-    k2.metric("Stock Equity", f"${equity_val:,.0f}")
-    k3.metric("Available Cash", f"${data['cash']:,.0f}")
-    
-    var_color = "normal" if data['port_var'] < data['limit'] else "inverse"
-    k4.metric("Portfolio VaR", f"${data['port_var']:,.0f}", 
-              f"Limit: ${data['limit']:,.0f}", delta_color=var_color)
-    k5.metric("Daily Volatility", f"{data['port_std_daily']*100:.2f}%")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Net Liq", f"${data['total_value']:,.0f}")
+    k2.metric("Cash", f"${data['cash']:,.0f}")
+    k3.metric("VaR", f"${data['port_var']:,.0f}", f"Limit: ${data['limit']:,.0f}")
+    k4.metric("Vol (Daily)", f"{data['port_std_daily']*100:.2f}%")
 
-st.divider()
-
-# ==========================================
-# 4. FILTERED TABLE & MATRIX
-# ==========================================
-col_table, col_matrix = st.columns([1.5, 1])
-
-with col_table:
-    st.markdown("### 💼 Holdings")
-    if data:
-        df = data['table_data']
-        active_df = df[df['Qty'] > 0].copy()
-        
-        if not active_df.empty:
-            st.dataframe(
-                active_df.style
-                .background_gradient(subset=['Risk Contrib ($)'], cmap="Reds")
-                .format({
-                    "Price": "${:,.2f}",
-                    "Avg Buy Price": "${:,.2f}",
-                    "Invested": "${:,.0f}",
-                    "Current Value": "${:,.0f}",
-                    "Weight (%)": "{:.1f}%",
-                    "Daily Volatility": "{:.2f}%",
-                    "Isolated VaR": "${:,.0f}",
-                    "Risk Contrib ($)": "${:,.0f}"
-                }),
-                width="stretch",
-                height=300
-            )
-        else:
-            st.info("No Active Positions. Use Sidebar to Trade.")
-
-with col_matrix:
-    st.markdown("### 🧠 Correlations")
-    if cov_matrix is not None:
-        std_devs = np.sqrt(np.diagonal(cov_matrix))
-        std_devs[std_devs == 0] = 1e-9 
-        outer_vols = np.outer(std_devs, std_devs)
-        corr_matrix = cov_matrix / outer_vols
-        corr_df = pd.DataFrame(corr_matrix, index=TICKERS, columns=TICKERS)
-        
-        st.dataframe(
-            corr_df.style.background_gradient(cmap="RdYlGn_r", vmin=-1, vmax=1).format("{:.2f}"),
-            width="stretch"
-        )
-
-# ==========================================
-# SIDEBAR: STATUS & BLOTTER
-# ==========================================
-st.sidebar.header("🔌 System Status")
-
-# Fetch Status Safely
-try:
-    r = get_redis_connection()
-    last_heartbeat = r.get("stream:heartbeat")
-    stream_error = r.get("stream:error")
-except:
-    last_heartbeat = None
-    stream_error = None
-
-if last_heartbeat:
-    st.sidebar.success(f"Stream Online: {last_heartbeat.decode()}")
-else:
-    st.sidebar.warning("Stream Starting...")
-
-if stream_error:
-    st.sidebar.error(f"Error: {stream_error.decode()}")
-
-st.sidebar.header("⚡ Execution Blotter")
-
-if 'trade_stage' not in st.session_state:
-    st.session_state.trade_stage = 'input'
-
-def reset_trade():
-    st.session_state.trade_stage = 'input'
-    st.session_state.trade_proposal = None
-
-if st.session_state.trade_stage == 'input':
-    with st.sidebar.form("trade_input"):
-        ticker = st.selectbox("Ticker", TICKERS)
-        side = st.selectbox("Side", ["BUY", "SELL"])
-        qty = st.number_input("Quantity", min_value=1, value=100)
-        if st.form_submit_button("Check Risk"):
-            impact = rm.check_trade_impact(ticker, qty, side)
-            st.session_state.trade_proposal = {"ticker": ticker, "qty": qty, "side": side, "impact": impact}
-            st.session_state.trade_stage = 'confirm'
-            st.rerun()
-
-elif st.session_state.trade_stage == 'confirm':
-    proposal = st.session_state.trade_proposal
-    impact = proposal['impact']
-    
-    st.sidebar.info(f"Confirm {proposal['side']} {proposal['qty']} {proposal['ticker']}?")
-    if impact['status'] == "APPROVED":
-        st.sidebar.success("✅ APPROVED")
-        st.sidebar.write(f"New VaR: ${impact['post_trade_var']:.0f}")
-        
-        col_a, col_b = st.sidebar.columns(2)
-        if col_a.button("EXECUTE"):
-            rm.execute_trade(proposal['ticker'], proposal['qty'], proposal['side'])
-            st.success("Trade Executed!")
-            time.sleep(0.5)
-            reset_trade()
-            st.rerun()
-        if col_b.button("CANCEL"):
-            reset_trade()
-            st.rerun()
+# --- TABLE ---
+if data:
+    st.subheader("Holdings")
+    df = data['table_data']
+    active_df = df[df['Qty'] > 0].copy()
+    if not active_df.empty:
+        st.dataframe(active_df.style.format({"Price": "${:,.2f}"}), use_container_width=True)
     else:
-        st.sidebar.error(f"❌ BLOCKED: {impact.get('reason')}")
-        if st.sidebar.button("Back"):
-            reset_trade()
-            st.rerun()
-
-# ==========================================
-# CRITICAL: THE AUTO-REFRESH MECHANISM
-# ==========================================
-time.sleep(1)  # Refresh Rate
-st.rerun()     # Force Streamlit to re-run the whole script
+        st.caption("No active positions.")
