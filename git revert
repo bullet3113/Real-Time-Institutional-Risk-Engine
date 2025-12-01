@@ -1,0 +1,23 @@
+[33m456dfda[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m execution blotter fix
+[33m5665cdc[m UI updates
+[33m2388928[m execution blotter added
+[33m6788bbd[m debugging completed
+[33mfedf9c6[m debugging stream
+[33mb7c43ba[m debugging stream
+[33mc1ae1f8[m debugging stream
+[33mb2312d4[m debugging stream
+[33m473483d[m debugging stream
+[33m85469cf[m debugging stream
+[33m4f1d369[m streamlit warning fix
+[33md408db0[m stream prices fix
+[33m52cdc16[m a
+[33m03baf86[m requirements updated
+[33m04062d5[m Added Dev Container Folder
+[33m4bff0c3[m redis functionality resolved
+[33m8ef1fdd[m Add Redis connection configuration for Streamlit
+[33mdd71f68[m Add initial requirements for project dependencies
+[33md23e1c1[m Project Files Added
+[33ma49aff7[m Create DEVELOPER_GUIDE.md for risk engine
+[33m2265351[m Revise documentation for project structure and math
+[33m31e9c74[m Revise README with project details and architecture
+[33m4f6e0d8[m Initial commit
